@@ -27,8 +27,10 @@ RosOnlineDataProvider::RosOnlineDataProvider(const VioParams& vio_params)
       frame_count_(FrameId(0)),
       left_img_subscriber_(),
       right_img_subscriber_(),
+      seg_img_subscriber_(),
       left_cam_info_subscriber_(),
       right_cam_info_subscriber_(),
+      seg_cam_info_subscriber_(),
       sync_img_(),
       sync_cam_info_(),
       imu_subscriber_(),
@@ -101,12 +103,15 @@ RosOnlineDataProvider::RosOnlineDataProvider(const VioParams& vio_params)
         nh_, "left_cam/camera_info", kMaxCamInfoQueueSize);
     right_cam_info_subscriber_.subscribe(
         nh_, "right_cam/camera_info", kMaxCamInfoQueueSize);
+    seg_cam_info_subscriber_.subscribe(
+        nh_, "seg_cam/camera_info", kMaxCamInfoQueueSize);
 
     sync_cam_info_ =
         VIO::make_unique<message_filters::Synchronizer<sync_pol_info>>(
             sync_pol_info(kMaxCamInfoSynchronizerQueueSize),
             left_cam_info_subscriber_,
-            right_cam_info_subscriber_);
+            right_cam_info_subscriber_,
+            seg_cam_info_subscriber_);
 
     DCHECK(sync_cam_info_);
     sync_cam_info_->registerCallback(
@@ -161,15 +166,18 @@ RosOnlineDataProvider::RosOnlineDataProvider(const VioParams& vio_params)
       *it_, "left_cam/image_raw", kMaxImagesQueueSize);
   right_img_subscriber_.subscribe(
       *it_, "right_cam/image_raw", kMaxImagesQueueSize);
+  seg_img_subscriber_.subscribe(
+      *it_, "seg_cam/image_raw", kMaxImagesQueueSize);
   static constexpr size_t kMaxImageSynchronizerQueueSize = 10u;
   sync_img_ = VIO::make_unique<message_filters::Synchronizer<sync_pol_img>>(
       sync_pol_img(kMaxImageSynchronizerQueueSize),
       left_img_subscriber_,
-      right_img_subscriber_);
+      right_img_subscriber_,
+      seg_img_subscriber_);
 
   DCHECK(sync_img_);
   sync_img_->registerCallback(
-      boost::bind(&RosOnlineDataProvider::callbackStereoImages, this, _1, _2));
+      boost::bind(&RosOnlineDataProvider::callbackStereoImages, this, _1, _2, _3));
 
   // Define Reinitializer Subscriber
   static constexpr size_t kMaxReinitQueueSize = 1u;
@@ -275,20 +283,25 @@ bool RosOnlineDataProvider::sequentialSpin() {
 // slow...
 void RosOnlineDataProvider::callbackStereoImages(
     const sensor_msgs::ImageConstPtr& left_msg,
-    const sensor_msgs::ImageConstPtr& right_msg) {
+    const sensor_msgs::ImageConstPtr& right_msg,
+    const sensor_msgs::ImageConstPtr& seg_msg) {
   CHECK_GE(vio_params_.camera_params_.size(), 2u);
   const CameraParams& left_cam_info = vio_params_.camera_params_.at(0);
   const CameraParams& right_cam_info = vio_params_.camera_params_.at(1);
 
   CHECK(left_msg);
   CHECK(right_msg);
+  CHECK(seg_msg);
   const Timestamp& timestamp_left = left_msg->header.stamp.toNSec();
   const Timestamp& timestamp_right = right_msg->header.stamp.toNSec();
+  const Timestamp& timestamp_seg = seg_msg->header.stamp.toNSec();
 
   CHECK(left_frame_callback_)
       << "Did you forget to register the left frame callback?";
   CHECK(right_frame_callback_)
       << "Did you forget to register the right frame callback?";
+  CHECK(boundingbox_callback_)
+      << "Did you forget to register the bounding box callback?";
 
   if (!shutdown_) {
     left_frame_callback_(VIO::make_unique<Frame>(
@@ -297,9 +310,21 @@ void RosOnlineDataProvider::callbackStereoImages(
                                                   timestamp_right,
                                                   right_cam_info,
                                                   readRosImage(right_msg)));
+    const cv::Mat img = readRosImage(seg_msg);
+    LOG(INFO) << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!";
+    LOG(INFO) << img.size();
+    // BoundingBox bb_ = getBoundingBoxes(readRosImage(seg_msg), timestamp_seg);
+    boundingbox_callback_(VIO::make_unique<BoundingBox>(2u, timestamp_seg));
     frame_count_++;
   }
 }
+
+// BoundingBox RosOnlineDataProvider::getBoundingBoxes(cv::Mat img, const Timestamp& timestamp) {
+//   LOG(INFO) << img.size();
+
+//   // return BoundingBox(2u, timestamp);
+//   return VIO::make_unique<BoundingBox>(2u, timestamp);
+// }
 
 void RosOnlineDataProvider::callbackCameraInfo(
     const sensor_msgs::CameraInfoConstPtr& left_msg,

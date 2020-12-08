@@ -72,9 +72,10 @@ class RosOnlineDataProvider : public RosDataProviderInterface {
   ReinitPacket reinit_packet_ = ReinitPacket();
 
  private:
-  // Stereo image callback
+  // Stereo image and bounding box callback
   void callbackStereoImages(const sensor_msgs::ImageConstPtr& left_msg,
-                            const sensor_msgs::ImageConstPtr& right_msg);
+                            const sensor_msgs::ImageConstPtr& right_msg,
+                            const sensor_msgs::ImageConstPtr& seg_msg);
 
   // CameraInfo callback
   void callbackCameraInfo(const sensor_msgs::CameraInfoConstPtr& left_msg,
@@ -97,6 +98,8 @@ class RosOnlineDataProvider : public RosDataProviderInterface {
                        const std::string& parent_frame_id,
                        const std::string& child_frame_id);
 
+  // BoundingBox getBoundingBoxes(cv::Mat img, const Timestamp& timestamp);
+
  private:
   // Define image transport for this and derived classes.
   std::unique_ptr<image_transport::ImageTransport> it_;
@@ -105,20 +108,23 @@ class RosOnlineDataProvider : public RosDataProviderInterface {
   typedef image_transport::SubscriberFilter ImageSubscriber;
   ImageSubscriber left_img_subscriber_;
   ImageSubscriber right_img_subscriber_;
+  ImageSubscriber seg_img_subscriber_;
 
   // Define CameraInfo message subscribers
   typedef message_filters::Subscriber<sensor_msgs::CameraInfo>
       CameraInfoSubscriber;
   CameraInfoSubscriber left_cam_info_subscriber_;
   CameraInfoSubscriber right_cam_info_subscriber_;
+  CameraInfoSubscriber seg_cam_info_subscriber_;
 
   // Declare Approx Synchronization Policy and Synchronizer for stereo images.
   // TODO(Toni): should be exact sync policy
   typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image,
+                                                          sensor_msgs::Image,
                                                           sensor_msgs::Image>
       sync_pol_img;
   typedef message_filters::sync_policies::
-      ApproximateTime<sensor_msgs::CameraInfo, sensor_msgs::CameraInfo>
+      ApproximateTime<sensor_msgs::CameraInfo, sensor_msgs::CameraInfo, sensor_msgs::CameraInfo>
           sync_pol_info;
   std::unique_ptr<message_filters::Synchronizer<sync_pol_img>> sync_img_;
   std::unique_ptr<message_filters::Synchronizer<sync_pol_info>> sync_cam_info_;

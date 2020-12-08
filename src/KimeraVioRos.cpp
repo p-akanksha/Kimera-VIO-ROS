@@ -209,6 +209,12 @@ void KimeraVioRos::connectVIO() {
       std::bind(&VIO::Pipeline::fillRightFrameQueue,
                 std::ref(*vio_pipeline_),
                 std::placeholders::_1));
+
+  // Register segmentation callback
+  data_provider_->registerBoundingBoxCallback(
+      std::bind(&VIO::Pipeline::fillBoundingBoxQueue,
+                std::ref(*vio_pipeline_),
+                std::placeholders::_1));
 }
 
 bool KimeraVioRos::restartKimeraVio(std_srvs::Trigger::Request& request,
