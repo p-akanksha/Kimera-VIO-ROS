@@ -20,6 +20,28 @@
 
 namespace VIO {
 
+typedef uint8_t SemanticLabel;
+
+struct HashableColor {
+  uint8_t r;
+  uint8_t g;
+  uint8_t b;
+  uint8_t a;
+
+  HashableColor(uint8_t r, uint8_t g, uint8_t b);
+  HashableColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+
+  bool operator==(const HashableColor& other) const;
+  bool equal(const HashableColor& color) const;
+};
+
+// For unordered map using Color as a Key.
+struct ColorHasher {
+  size_t operator()(const HashableColor& k) const;
+};
+typedef std::unordered_map<HashableColor, SemanticLabel, ColorHasher>
+    ColorToSemanticLabelMap;
+
 class RosOnlineDataProvider : public RosDataProviderInterface {
  public:
   KIMERA_DELETE_COPY_CONSTRUCTORS(RosOnlineDataProvider);
@@ -98,6 +120,16 @@ class RosOnlineDataProvider : public RosDataProviderInterface {
                        const std::string& parent_frame_id,
                        const std::string& child_frame_id);
 
+  void colorToLabelMap(const std::string& filename); 
+
+  const cv::Mat convertColorToLabel(const cv::Mat color);
+
+  SemanticLabel getSemanticLabelFromColor(const HashableColor& color) const;
+
+  void publishSegImage(const Timestamp& timestamp, const cv::Mat& debug_image) const;
+
+  void getBoundingBoxes(const cv::Mat img, const uint8_t nlabel, const Timestamp& timestamp, cv::Mat left_img);
+
   // BoundingBox getBoundingBoxes(cv::Mat img, const Timestamp& timestamp);
 
  private:
@@ -150,6 +182,17 @@ class RosOnlineDataProvider : public RosDataProviderInterface {
   std::string base_link_frame_id_;
   std::string left_cam_frame_id_;
   std::string right_cam_frame_id_;
-};
+
+  // Color to semantic label map
+  ColorToSemanticLabelMap color_to_semantic_label_; 
+
+  using ImagePublishers = RosPublishers<std::string,
+                                        sensor_msgs::ImagePtr,
+                                        image_transport::Publisher,
+                                        image_transport::ImageTransport>;
+
+  //! Define image publishers manager
+  ros::NodeHandle nh;
+  std::unique_ptr<ImagePublishers> image_publishers_;};
 
 }  // namespace VIO

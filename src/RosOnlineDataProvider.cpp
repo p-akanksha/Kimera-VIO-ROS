@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <glog/logging.h>
+#include <cv_bridge/cv_bridge.h>
 
 #include <geometry_msgs/PoseStamped.h>
 #include <sensor_msgs/image_encodings.h>
@@ -18,8 +19,31 @@
 #include <tf2_ros/static_transform_broadcaster.h>
 
 #include "kimera_vio_ros/utils/UtilsRos.h"
+#include "kimera-vio/common/csv_iterator.h"
 
 namespace VIO {
+
+HashableColor::HashableColor(uint8_t r, uint8_t g, uint8_t b)
+    : HashableColor(r, g, b, 255) {}
+HashableColor::HashableColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+    : r(r), g(g), b(b), a(a) {}
+
+bool HashableColor::operator==(const HashableColor& other) const {
+  return (r == other.r && g == other.g && b == other.b && a == other.a);
+}
+
+bool HashableColor::equal(const HashableColor& color) const {
+  return r == color.r && g == color.g && b == color.b && a == color.a;
+}
+
+size_t ColorHasher::operator()(const HashableColor& k) const {
+  // Compute individual hash values for first,
+  // second and third and combine them using XOR
+  // and bit shifting:
+  // TODO(Toni): use alpha value as well!!
+  return ((std::hash<uint8_t>()(k.r) ^ (std::hash<uint8_t>()(k.g) << 1)) >> 1) ^
+         (std::hash<uint8_t>()(k.b) << 1);
+}
 
 RosOnlineDataProvider::RosOnlineDataProvider(const VioParams& vio_params)
     : RosDataProviderInterface(vio_params),
@@ -51,6 +75,8 @@ RosOnlineDataProvider::RosOnlineDataProvider(const VioParams& vio_params)
       LOG_FIRST_N(INFO, 1) << "Waiting for ROS time to be valid...";
     }
   }
+
+  image_publishers_ = VIO::make_unique<ImagePublishers>(nh);
 
   // Define ground truth odometry Subsrciber
   static constexpr size_t kMaxGtOdomQueueSize = 1u;
@@ -222,6 +248,9 @@ RosOnlineDataProvider::RosOnlineDataProvider(const VioParams& vio_params)
   } else {
     LOG(INFO) << "RosOnlineDataProvider running in sequential mode.";
   }
+
+  // Generate color to label map
+  colorToLabelMap("/home/akanksha/Documents/Git/Kimera_VIO_ROS/src/Kimera-VIO/cfg/goseek_segmentation_mapping_dense.csv");
 }
 
 RosOnlineDataProvider::~RosOnlineDataProvider() {
@@ -310,21 +339,139 @@ void RosOnlineDataProvider::callbackStereoImages(
                                                   timestamp_right,
                                                   right_cam_info,
                                                   readRosImage(right_msg)));
-    const cv::Mat img = readRosImage(seg_msg);
+    const cv::Mat seg_img = readRosImage(seg_msg);
+    cv::Mat left_img = readRosImage(left_msg);
+    const cv::Mat label = convertColorToLabel(seg_img);
+    LOG(INFO) << seg_img.channels();
     LOG(INFO) << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!";
-    LOG(INFO) << img.size();
-    // BoundingBox bb_ = getBoundingBoxes(readRosImage(seg_msg), timestamp_seg);
+    LOG(INFO) << label.channels();
+    getBoundingBoxes(label, 11, timestamp_seg, left_img);
+
     boundingbox_callback_(VIO::make_unique<BoundingBox>(2u, timestamp_seg));
     frame_count_++;
   }
 }
 
-// BoundingBox RosOnlineDataProvider::getBoundingBoxes(cv::Mat img, const Timestamp& timestamp) {
-//   LOG(INFO) << img.size();
+void RosOnlineDataProvider::getBoundingBoxes(const cv::Mat img, const uint8_t nlabel, const Timestamp& timestamp, cv::Mat left_img) {
+  cv::Mat dst, left_img_color;
+  std::vector<cv::Rect> boundRects();
+  cv::cvtColor(left_img, left_img_color, cv::COLOR_GRAY2BGR);
 
-//   // return BoundingBox(2u, timestamp);
-//   return VIO::make_unique<BoundingBox>(2u, timestamp);
-// }
+  std::vector<cv::Scalar> colors;
+  colors.push_back(cv::Scalar(0,0,0)); // black - Floor
+  colors.push_back(cv::Scalar(0,0,255)); // red - Door
+  colors.push_back(cv::Scalar(0,255,0)); // green - Chair
+  colors.push_back(cv::Scalar(0,255,255)); // yellow - Ceiling
+  colors.push_back(cv::Scalar(255,0,0)); // blue - LCD
+  colors.push_back(cv::Scalar(255,0,255)); // pink - Keurig_low
+  colors.push_back(cv::Scalar(255,255,0)); // cyan - tesse_cube
+  colors.push_back(cv::Scalar(255,255,255)); // white - Soderhamn_Pillows2/bench?
+  colors.push_back(cv::Scalar(128,128,128)); // ?? - Closet_Metal
+  colors.push_back(cv::Scalar(0,0,128)); // dark red - TableWooden_B
+  colors.push_back(cv::Scalar(0,128,0)); // dark green - Wall
+  colors.push_back(cv::Scalar(128,0,0)); // dark blue - Ceiling
+
+  for (int i=1; i<=nlabel; i++) {
+    LOG(WARNING) << i;
+    if (i == 10 || i == 3 || i == 11) {
+      // skip walls, chair and ceiling
+      continue;
+    }
+    cv::inRange (img, cv::Scalar(i), cv::Scalar(i), dst);
+
+    std::vector<std::vector<cv::Point> > contours;
+    std::vector<cv::Vec4i> hierarchy;
+
+    cv::findContours(dst, contours, hierarchy, cv::RETR_TREE, cv::CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
+
+    std::vector<std::vector<cv::Point> > contours_poly( contours.size() );
+    std::vector<cv::Rect> boundRect( contours.size() );
+
+    for( size_t k = 0; k < contours.size(); k++ )
+    {
+      cv::approxPolyDP( cv::Mat(contours[k]), contours_poly[k], 3, true );
+      boundRect[k] = cv::boundingRect( cv::Mat(contours_poly[k]) );
+    }
+
+    for( size_t k = 0; k< contours.size(); k++ )
+    {
+      cv::rectangle(left_img_color, boundRect[k].tl(), boundRect[k].br(), colors[i], 2, 8, 0 );
+    }
+  }
+
+  std_msgs::Header h;
+  h.stamp.fromNSec(timestamp);
+  h.frame_id = base_link_frame_id_;
+  image_publishers_->publish(
+      "akanksha", cv_bridge::CvImage(h, "bgr8", left_img_color).toImageMsg());
+
+  return;
+}
+
+void RosOnlineDataProvider::colorToLabelMap(const std::string& filename) {
+  std::ifstream file(filename.c_str());
+  CHECK(file.good()) << "Couldn't open file: " << filename.c_str();
+  size_t row_number = 1;
+  for (CSVIterator loop(file); loop != CSVIterator(); ++loop) {
+    // We expect the CSV to have header:
+    // 0   , 1  , 2    , 3   , 4    , 5
+    // name, red, green, blue, alpha, id
+    CHECK_EQ(loop->size(), 6) << "Row " << row_number << " is invalid.";
+    uint8_t r = std::atoi((*loop)[1].c_str());
+    uint8_t g = std::atoi((*loop)[2].c_str());
+    uint8_t b = std::atoi((*loop)[3].c_str());
+    uint8_t a = std::atoi((*loop)[4].c_str());
+    uint8_t id = std::atoi((*loop)[5].c_str());
+    HashableColor rgba = HashableColor(r, g, b, a);
+    color_to_semantic_label_[rgba] = id;
+    row_number++;
+  }
+  // TODO(Toni): remove
+  // Assign color 255,255,255 to unknown object 0u
+  color_to_semantic_label_[HashableColor(225,225,225)] = 0u;
+}
+
+SemanticLabel RosOnlineDataProvider::getSemanticLabelFromColor(
+    const HashableColor& color) const {
+  const auto& it = color_to_semantic_label_.find(color);
+  if (it != color_to_semantic_label_.end()) {
+    return it->second;
+  } else {
+    LOG(ERROR) << "Caught an unknown color: \n"
+               << "RGB: " << std::to_string(color.r) << ' '
+               <<  std::to_string(color.g) << ' '
+               <<  std::to_string(color.b) << ' '
+               <<  std::to_string(color.a);
+    return 0u; // Assign unknown label for now...
+  }
+}
+
+const cv::Mat RosOnlineDataProvider::convertColorToLabel(const cv::Mat color) {
+  cv::Mat label(color.size(), CV_8UC1, cv::Scalar(0));
+  LOG(WARNING) << label.size();
+
+  for (int i=0; i<color.rows; i++) {
+    for (int j=0; j<color.cols; j++) {
+      label.at<uchar>(i,j) = getSemanticLabelFromColor(HashableColor(
+        color.at<cv::Vec3b>(i,j)[2], color.at<cv::Vec3b>(i,j)[1], 
+        color.at<cv::Vec3b>(i,j)[0]));
+    }
+  }
+
+  // return BoundingBox(2u, timestamp);
+  return label;
+}
+
+void RosOnlineDataProvider::publishSegImage(const Timestamp& timestamp,
+                                      const cv::Mat& debug_image) const {
+  // CHECK(debug_image.type(), CV_8UC1);
+  std_msgs::Header h;
+  h.stamp.fromNSec(timestamp);
+  h.frame_id = base_link_frame_id_;
+  // Copies...
+  image_publishers_->publish(
+      "seg_img", cv_bridge::CvImage(h, "mono8", debug_image).toImageMsg());
+}
 
 void RosOnlineDataProvider::callbackCameraInfo(
     const sensor_msgs::CameraInfoConstPtr& left_msg,

@@ -58,10 +58,13 @@ const cv::Mat RosDataProviderInterface::readRosImage(
 
   CHECK(cv_ptr);
   const cv::Mat img_const = cv_ptr->image;  // Don't modify shared image in ROS.
+  LOG(INFO) << "!!!!!!!!!!!!!!!!!!!!!!!!";
+  LOG(INFO) << img_msg->encoding;
   cv::Mat converted_img(img_const.size(), CV_8U);
   if (img_msg->encoding == sensor_msgs::image_encodings::BGR8) {
     LOG_EVERY_N(WARNING, 10) << "Converting image...";
-    cv::cvtColor(img_const, converted_img, cv::COLOR_BGR2GRAY);
+    // cv::cvtColor(img_const, converted_img, cv::COLOR_BGR2GRAY);
+    converted_img = img_const;
     return converted_img;
   } else if (img_msg->encoding == sensor_msgs::image_encodings::RGB8) {
     LOG_EVERY_N(WARNING, 10) << "Converting image...";
